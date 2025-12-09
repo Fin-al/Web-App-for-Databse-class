@@ -1,0 +1,306 @@
+// server.js
+const express = require("express");
+const cors = require("cors");
+
+const app = express();
+const PORT = 4000;
+
+app.use(cors());
+app.use(express.json());
+
+/* ---------------- ERD-style data (in-memory) ---------------- */
+
+/** Building (Building_ID, Building_Name, location) */
+let buildings = [
+  { buildingId: 1, buildingName: "Engineering", location: "North Campus" },
+  { buildingId: 2, buildingName: "Science", location: "East Campus" },
+];
+
+/** Departments (Dept_ID, Dept_Name, Building_ID FK) */
+let departments = [
+  { deptId: 1, deptName: "Mathematics", buildingId: 1 },
+  { deptId: 2, deptName: "Computer Science", buildingId: 1 },
+  { deptId: 3, deptName: "Physics", buildingId: 2 },
+];
+
+/** ROOM (Room_ID, Building_ID FK, Capacity, Availability_Status, Room_Num, Equipment) */
+let rooms = [
+  {
+    roomId: 1,
+    buildingId: 1,
+    capacity: 40,
+    availabilityStatus: "Available",
+    roomNum: "A101",
+    equipment: "Projector",
+  },
+  {
+    roomId: 2,
+    buildingId: 1,
+    capacity: 30,
+    availabilityStatus: "Available",
+    roomNum: "A102",
+    equipment: "Whiteboard",
+  },
+  {
+    roomId: 3,
+    buildingId: 2,
+    capacity: 35,
+    availabilityStatus: "Available",
+    roomNum: "B201",
+    equipment: "Projector + Whiteboard",
+  },
+];
+
+/** Class (Class_ID, Class_Name, Section, Dept_ID FK, Room_ID FK) */
+let classes = []; // starts empty – created when secretary submits requests
+
+/** BlackOut (Blackout_ID, Room_ID FK, Start_Time, End_Time, Reason) */
+let blackouts = [
+  {
+    blackoutId: 1,
+    roomId: 1,
+    startTime: "Fri 14:00",
+    endTime: "Fri 16:00",
+    reason: "Maintenance",
+  },
+  {
+    blackoutId: 2,
+    roomId: 3,
+    startTime: "Wed 08:00",
+    endTime: "Wed 10:00",
+    reason: "Event",
+  },
+];
+
+/** Request (Request_ID, Class_ID FK, Time, Room_ID FK, Status, Date) */
+let requests = [];
+
+/* ---------------- Helper functions ---------------- */
+
+function findDeptByName(name) {
+  return departments.find(
+    (d) => d.deptName.toLowerCase() === name.trim().toLowerCase()
+  );
+}
+
+function findRoomByNum(roomNum) {
+  return rooms.find(
+    (r) => r.roomNum.toLowerCase() === roomNum.trim().toLowerCase()
+  );
+}
+
+function getDeptNameById(deptId) {
+  const dept = departments.find((d) => d.deptId === deptId);
+  return dept ? dept.deptName : "Unknown Dept";
+}
+
+function getRoomNumById(roomId) {
+  const room = rooms.find((r) => r.roomId === roomId);
+  return room ? room.roomNum : "TBD";
+}
+
+/* ---------------- API: basic entity GETs ---------------- */
+
+app.get("/api/buildings", (req, res) => {
+  res.json(buildings);
+});
+
+app.get("/api/departments", (req, res) => {
+  res.json(departments);
+});
+
+app.get("/api/rooms", (req, res) => {
+  res.json(rooms);
+});
+
+app.get("/api/classes", (req, res) => {
+  res.json(classes);
+});
+
+app.get("/api/blackouts", (req, res) => {
+  res.json(blackouts);
+});
+
+app.get("/api/requests", (req, res) => {
+  res.json(requests);
+});
+
+/* ---------------- API: derived student schedule ----------------
+   This mimics the React studentSchedule array:
+
+   JOIN Class + Department + Room + Request
+---------------------------------------------------------------- */
+
+app.get("/api/student-schedule", (req, res) => {
+  const schedule = classes.map((cls) => {
+    const deptName = getDeptNameById(cls.deptId);
+    const roomNum = cls.roomId ? getRoomNumById(cls.roomId) : "TBD";
+
+    const reqRow = requests.find((r) => r.classId === cls.classId);
+    const time = reqRow?.time || "TBD";
+    const status = reqRow?.status || "Pending";
+
+    return {
+      classId: cls.classId,
+      className: cls.className,
+      section: cls.section,
+      deptName,
+      roomNum,
+      time,
+      status,
+    };
+  });
+
+  res.json(schedule);
+});
+
+/* ---------------- API: secretary submits request -------------- */
+/**
+ * POST /api/requests
+ * body JSON:
+ * {
+ *   "className": "COMP 380",
+ *   "section": "01",
+ *   "departmentName": "Computer Science",
+ *   "preferredRoomNum": "A101",
+ *   "preferredTime": "Mon 09:00–10:15"
+ * }
+ *
+ * Creates:
+ *  - Class row (Class_ID, Class_Name, Section, Dept_ID, Room_ID)
+ *  - Request row (Request_ID, Class_ID, Time, Room_ID, Status, Date)
+ */
+app.post("/api/requests", (req, res) => {
+  const {
+    className,
+    section,
+    departmentName,
+    preferredRoomNum,
+    preferredTime,
+  } = req.body;
+
+  if (!className || !departmentName || !preferredTime) {
+    return res
+      .status(400)
+      .json({ error: "className, departmentName and preferredTime are required." });
+  }
+
+  // ---- Dept_ID (FK) ----
+  let dept = findDeptByName(departmentName);
+  if (!dept) {
+    const newDeptId = departments.length + 1;
+    dept = {
+      deptId: newDeptId,
+      deptName: departmentName.trim(),
+      buildingId: buildings[0]?.buildingId || 1,
+    };
+    departments.push(dept);
+  }
+  const deptId = dept.deptId;
+
+  const cleanedRoom = (preferredRoomNum || "").trim();
+  const cleanedTime = preferredTime.trim();
+  let chosenRoom = cleanedRoom ? findRoomByNum(cleanedRoom) : null;
+
+  // Check conflict: requests with same room + time
+  const hasConflict = chosenRoom
+    ? requests.some(
+        (r) =>
+          r.roomId === chosenRoom.roomId &&
+          r.time.toLowerCase() === cleanedTime.toLowerCase()
+      )
+    : false;
+
+  let status = "Pending – no room chosen";
+  let note = "";
+  let finalRoom = null;
+
+  if (chosenRoom) {
+    if (hasConflict) {
+      // find alternative room (no request at that time)
+      const busyRoomIdsAtTime = requests
+        .filter((r) => r.time.toLowerCase() === cleanedTime.toLowerCase())
+        .map((r) => r.roomId);
+
+      const altRoom = rooms.find(
+        (r) => !busyRoomIdsAtTime.includes(r.roomId)
+      );
+
+      if (altRoom) {
+        status = "Auto-assigned to alternative room";
+        note = `Preferred room is busy. Assigned room: ${altRoom.roomNum}.`;
+        finalRoom = altRoom;
+      } else {
+        status = "Conflict – manual review needed";
+        note = "All rooms are occupied at that time. Admin review required.";
+      }
+    } else {
+      status = "Scheduled in preferred room";
+      note = `Room ${chosenRoom.roomNum} reserved.`;
+      finalRoom = chosenRoom;
+    }
+  } else {
+    status = "Pending – no room chosen";
+    note = "No preferred room supplied.";
+  }
+
+  // ---- Create Class row ----
+  const newClassId = classes.length + 1;
+  const newClass = {
+    classId: newClassId,
+    className: className.trim(),
+    section: (section || "01").trim(),
+    deptId,
+    roomId: finalRoom ? finalRoom.roomId : null,
+  };
+  classes.push(newClass);
+
+  // ---- Create Request row ----
+  const newRequestId = requests.length + 1;
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  const newReq = {
+    requestId: newRequestId,
+    classId: newClassId,
+    time: cleanedTime,
+    roomId: finalRoom ? finalRoom.roomId : null,
+    status,
+    date: today,
+    // extra UI helper fields – not strictly ERD, but convenient
+    deptId,
+    courseName: newClass.className,
+    preferredRoomNum: cleanedRoom || "Any",
+  };
+  requests.unshift(newReq);
+
+  res.json({
+    message: status + " " + note,
+    status,
+    note,
+    createdClass: newClass,
+    createdRequest: newReq,
+  });
+});
+
+/* ---------------- (Optional) simple login endpoints ----------- */
+/** These match your frontend demo credentials:
+ *   secretary / secret123
+ *   admin / admin123
+ */
+app.post("/api/login", (req, res) => {
+  const { role, username, password } = req.body;
+
+  if (role === "secretary" && username === "secretary" && password === "secret123") {
+    return res.json({ ok: true, role: "secretary" });
+  }
+  if (role === "admin" && username === "admin" && password === "admin123") {
+    return res.json({ ok: true, role: "admin" });
+  }
+  return res.status(401).json({ ok: false, error: "Invalid credentials" });
+});
+
+/* ---------------- Start server ---------------- */
+
+app.listen(PORT, () => {
+  console.log(`Classroom ERD Node server running at http://localhost:${PORT}`);
+});
