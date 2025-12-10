@@ -1,93 +1,65 @@
 require('dotenv').config();
 const express = require('express');
 const mysql = require('mysql');
+const cors = require('cors');
 
 const app = express();
 const port = 3000;
 
+app.use(cors({
+    origin: 'http://localhost:5173'
+}));
 app.use(express.json());
 
 const db = mysql.createConnection({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_DATABASE,
-    port: process.env.DB_PORT
+    database: "class_manager_db",
+    port: process.env.DB_PORT || 3306,
+    timezone: 'Z'
 });
 
 db.connect(err => {
     if (err) {
-        console.error(' Database connection failed: ' + err.stack);
+        console.error('Database connection failed:', err.stack);
         return;
     }
-    console.log(' Database connected successfully!');
+    console.log('Database connected successfully!');
+});
+
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+
+    if (username === 'admin' && password === 'admin123') {
+        return res.json({ ok: true, role: 'admin', message: 'Admin logged in successfully.' });
+    }
+    if (username === 'secretary' && password === 'secret123') {
+        return res.json({ ok: true, role: 'secretary', message: 'Secretary logged in successfully.' });
+    }
+
+    return res.status(401).json({ ok: false, error: 'Invalid username or password.' });
 });
 
 app.get('/api/assignments', (req, res) => {
     const query = `
-        SELECT
-            D.DeptName,
-            C.ClassName,
-            C.SectionNum,
-            B.BldgName,
-            R.RoomNumber,
-            A.DayOfWeek,
-            TIME_FORMAT(A.StartTime, '%h:%i %p') AS StartTime,
-            TIME_FORMAT(A.EndTime, '%h:%i %p') AS EndTime
-        FROM
-            Assignment A
-        JOIN
-            Class C ON A.ClassID = C.ClassID
-        JOIN
-            Room R ON A.RoomID = R.RoomID
-        JOIN
-            Building B ON R.BldgID = B.BldgID
-        JOIN
-            Department D ON C.DeptID = D.DeptID
-        ORDER BY
-            D.DeptName, A.DayOfWeek, A.StartTime;
-    `;
-
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error executing query:', err);
-            return res.status(500).json({ error: 'Database query failed' });
-        }
-        res.json(results);
-    });
-});
-
-app.get('/api/departments', (req, res) => {
-    const query = 'SELECT DeptID, DeptName FROM Department ORDER BY DeptName;';
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching departments:', err);
-            return res.status(500).json({ error: 'Database query failed' });
-        }
-        res.json(results);
-    });
-});
-
-app.get('/api/rooms', (req, res) => {
-    const query = `
-        SELECT
-            R.RoomID,
-            R.RoomNumber,
-            B.BldgName,
-            R.Capacity,
-            R.Equipment,
-            R.RoomType
-        FROM
-            Room R
-        JOIN
-            Building B ON R.BldgID = B.BldgID
-        ORDER BY
-            B.BldgName, R.RoomNumber;
+        SELECT 
+            A.DayOfWeek, A.StartTime, A.EndTime, 
+            R.RoomNumber, B.BldgName,
+            C.ClassName, C.SectionNum,
+            D.DeptName
+        FROM Assignment A
+        JOIN Room R ON A.RoomID = R.RoomID
+        JOIN Building B ON R.BldgID = B.BldgID
+        JOIN Request Req ON A.ClassID = Req.ClassID 
+        JOIN Class C ON Req.ClassID = C.ClassID 
+        JOIN Department D ON C.DeptID = D.DeptID
+        ORDER BY A.DayOfWeek, A.StartTime, B.BldgName, R.RoomNumber;
     `;
     db.query(query, (err, results) => {
         if (err) {
-            console.error('Error fetching rooms:', err);
-            return res.status(500).json({ error: 'Database query failed' });
+            console.error('SQL QUERY ERROR:', err);
+            return res.status(500).json({ error: err.message });
         }
         res.json(results);
     });
@@ -95,87 +67,151 @@ app.get('/api/rooms', (req, res) => {
 
 app.get('/api/requests', (req, res) => {
     const query = `
-        SELECT
-            Req.RequestID,
-            D.DeptName,
-            C.ClassName,
-            C.SectionNum,
-            Req.PreferredTime,
-            Req.EquipRequest,
-            Req.Priority,
-            Req.DateSubmitted
-        FROM
-            Request Req
-        JOIN
-            Class C ON Req.ClassID = C.ClassID
-        JOIN
-            Department D ON Req.DeptID = D.DeptID
-        WHERE
-            Req.RequestID NOT IN (SELECT RequestID FROM Assignment)
-        ORDER BY
-            Req.Priority DESC, Req.DateSubmitted ASC;
+        SELECT 
+            Req.RequestID, Req.Priority, Req.PreferredTime, Req.EquipRequest,
+            C.ClassName, C.SectionNum,
+            D.DeptName
+        FROM Request Req
+        JOIN Class C ON Req.ClassID = C.ClassID AND Req.DeptID = C.DeptID
+        JOIN Department D ON C.DeptID = D.DeptID
+        WHERE Req.PreferredRoomID IS NULL
+        ORDER BY Req.Priority DESC, Req.RequestID ASC;
     `;
     db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching requests:', err);
-            return res.status(500).json({ error: 'Database query failed' });
-        }
+        if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
-app.post('/api/assignments', (req, res) => {
-    const { requestID, roomID, dayOfWeek, startTime, endTime } = req.body;
+app.get('/api/departments', (req, res) => {
+    db.query('SELECT DeptID, DeptName FROM Department', (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
 
-    const getClassIdQuery = 'SELECT ClassID FROM Request WHERE RequestID = ?';
-
-    db.query(getClassIdQuery, [requestID], (err, results) => {
-        if (err || results.length === 0) {
-            console.error('Error fetching ClassID for request:', err || 'Request not found');
-            return res.status(404).json({ error: 'Request not found or database error' });
-        }
-        
-        const classID = results[0].ClassID;
-
-        const insertAssignmentQuery = `
-            INSERT INTO Assignment (ClassID, RoomID, DayOfWeek, StartTime, EndTime)
-            VALUES (?, ?, ?, ?, ?)
-        `;
-        const assignmentValues = [classID, roomID, dayOfWeek, startTime, endTime];
-
-        db.query(insertAssignmentQuery, assignmentValues, (insertErr, insertResult) => {
-            if (insertErr) {
-                console.error('Error creating assignment:', insertErr);
-                if (insertErr.code === 'ER_DUP_ENTRY') {
-                    return res.status(409).json({ error: 'Conflict: Room is already assigned during this time slot.' });
-                }
-                return res.status(500).json({ error: 'Failed to create assignment due to database error' });
-            }
-            res.status(201).json({ 
-                message: 'Assignment created successfully', 
-                assignmentId: insertResult.insertId 
-            });
-        });
+app.get('/api/rooms', (req, res) => {
+    const query = `
+        SELECT 
+            R.RoomID, R.RoomNumber, B.BldgName, R.Capacity 
+        FROM Room R
+        JOIN Building B ON R.BldgID = B.BldgID;
+    `;
+    db.query(query, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
     });
 });
 
 app.post('/api/requests', (req, res) => {
     const { classID, deptID, priority, equipRequest, preferredRoomID, preferredTime, cardBltID } = req.body;
     
-    const query = `
-        INSERT INTO Request (ClassID, DeptID, Priority, EquipRequest, PreferredRoomID, PreferredTime, DateSubmitted, CardBltID)
-        VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
-    `;
-    const values = [classID, deptID, priority, equipRequest, preferredRoomID, preferredTime, cardBltID];
+    if (!classID || !deptID || !preferredTime) {
+        return res.status(400).json({ error: 'Class ID, Department ID, and Preferred Time are required.' });
+    }
 
-    db.query(query, values, (err, results) => {
+    const query = `
+        INSERT INTO Request (ClassID, DeptID, Priority, EquipRequest, PreferredRoomID, PreferredTime, CardBltID, DateSubmitted) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+    `;
+    const values = [classID, deptID, priority, equipRequest || null, preferredRoomID || null, preferredTime, cardBltID || null];
+
+    db.query(query, values, (err, result) => {
         if (err) {
-            console.error('Error submitting request:', err);
-            return res.status(500).json({ error: 'Failed to submit request due to database error' });
+            console.error(err);
+            return res.status(500).json({ error: 'Database insertion failed.' });
         }
-        res.status(201).json({ 
-            message: 'Request submitted successfully', 
-            requestID: results.insertId 
+        res.status(201).json({ message: 'Request submitted successfully.', requestID: result.insertId });
+    });
+});
+
+app.post('/api/blackouts', (req, res) => {
+    const { roomID, dayOfWeek, startTime, endTime, reason } = req.body;
+
+    if (!roomID || !dayOfWeek || !startTime || !endTime || !reason) {
+        return res.status(400).json({ error: 'All blackout fields are required.' });
+    }
+
+    const query = `
+        INSERT INTO Blackout (RoomID, StartTime, EndTime, Reason) 
+        VALUES (?, CONCAT(CURDATE(), ' ', ?), CONCAT(CURDATE(), ' ', ?), ?)
+    `;
+    const values = [roomID, startTime, endTime, reason];
+
+    db.query(query, values, (err, result) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).json({ error: 'Database insertion failed.' });
+        }
+        res.status(201).json({ message: 'Blackout created successfully.', blackoutID: result.insertId });
+    });
+});
+
+app.post('/api/assignments', (req, res) => {
+    const { requestID, roomID, dayOfWeek, startTime, endTime } = req.body;
+
+    if (!requestID || !roomID || !dayOfWeek || !startTime || !endTime) {
+        return res.status(400).json({ error: 'All assignment fields are required.' });
+    }
+
+    const conflictCheckQuery = `
+        SELECT 
+            (SELECT COUNT(*) FROM Assignment A 
+             WHERE A.RoomID = ? AND A.DayOfWeek = ? AND 
+             (A.StartTime < ? AND A.EndTime > ?)) AS assignmentConflict,
+            (SELECT COUNT(*) FROM Blackout B
+             WHERE B.RoomID = ? AND 
+             (B.StartTime < CONCAT(CURDATE(), ' ', ?) AND B.EndTime > CONCAT(CURDATE(), ' ', ?))) AS blackoutConflict
+    `;
+    
+    const conflictValues = [
+        roomID, dayOfWeek, endTime, startTime,
+        roomID, endTime, startTime
+    ];
+
+    db.query(conflictCheckQuery, conflictValues, (err, results) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).json({ error: 'Conflict check failed.' });
+        }
+
+        const { assignmentConflict, blackoutConflict } = results[0];
+
+        if (assignmentConflict > 0) {
+            return res.status(409).json({ error: 'Conflict: Room is already assigned to a class at that time.' });
+        }
+        if (blackoutConflict > 0) {
+            return res.status(409).json({ error: 'Conflict: Room is blacked out for maintenance or an event at that time.' });
+        }
+        
+        const getClassIdQuery = 'SELECT ClassID FROM Request WHERE RequestID = ?';
+        db.query(getClassIdQuery, [requestID], (err, reqResults) => {
+            if (err || reqResults.length === 0) {
+                console.error('Error fetching ClassID:', err);
+                return res.status(500).json({ error: 'Invalid RequestID or database error.' });
+            }
+            const classID = reqResults[0].ClassID;
+
+            const assignmentQuery = `
+                INSERT INTO Assignment (ClassID, RoomID, DayOfWeek, StartTime, EndTime, AssignmentDate) 
+                VALUES (?, ?, ?, ?, ?, NOW())
+            `;
+            const assignmentValues = [classID, roomID, dayOfWeek, startTime, endTime];
+
+            db.query(assignmentQuery, assignmentValues, (err, result) => {
+                if (err) {
+                    console.error(err);
+                    return res.status(500).json({ error: 'Assignment insertion failed.' });
+                }
+
+                const updateRequestQuery = 'UPDATE Request SET PreferredRoomID = ? WHERE RequestID = ?';
+                db.query(updateRequestQuery, [roomID, requestID], (err) => {
+                    if (err) {
+                        console.error('Error updating request status:', err);
+                    }
+                    res.status(201).json({ message: 'Assignment created and request updated successfully.', assignmentID: result.insertId });
+                });
+            });
         });
     });
 });
