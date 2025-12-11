@@ -84,7 +84,7 @@ CREATE TABLE Class (
 
 CREATE TABLE Request (
     RequestID INT PRIMARY KEY,
-    ClassID INT NOT NULL UNIQUE,
+    ClassID INT NOT NULL,
     DeptID INT NOT NULL,
     Priority INT,
     EquipRequest VARCHAR(255),
@@ -99,7 +99,7 @@ CREATE TABLE Request (
 
 CREATE TABLE Assignment (
     AssignmentID INT PRIMARY KEY,
-    ClassID INT NOT NULL UNIQUE,
+    ClassID INT NOT NULL,
     RoomID INT NOT NULL,
     DayOfWeek VARCHAR(10) NOT NULL,
     StartTime TIME NOT NULL,

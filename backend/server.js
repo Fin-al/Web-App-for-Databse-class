@@ -25,7 +25,7 @@ db.connect(err => {
         console.error('Database connection failed:', err.stack);
         return;
     }
-    console.log('Database connected successfully!');
+    console.log('Database connected successfully! ✅');
 });
 
 app.post('/api/login', (req, res) => {
@@ -51,14 +51,13 @@ app.get('/api/assignments', (req, res) => {
         FROM Assignment A
         JOIN Room R ON A.RoomID = R.RoomID
         JOIN Building B ON R.BldgID = B.BldgID
-        JOIN Request Req ON A.ClassID = Req.ClassID 
-        JOIN Class C ON Req.ClassID = C.ClassID 
+        JOIN Class C ON A.ClassID = C.ClassID 
         JOIN Department D ON C.DeptID = D.DeptID
         ORDER BY A.DayOfWeek, A.StartTime, B.BldgName, R.RoomNumber;
     `;
     db.query(query, (err, results) => {
         if (err) {
-            console.error('SQL QUERY ERROR:', err);
+            console.error('SQL QUERY ERROR (assignments):', err);
             return res.status(500).json({ error: err.message });
         }
         res.json(results);
@@ -72,13 +71,16 @@ app.get('/api/requests', (req, res) => {
             C.ClassName, C.SectionNum,
             D.DeptName
         FROM Request Req
-        JOIN Class C ON Req.ClassID = C.ClassID AND Req.DeptID = C.DeptID
+        JOIN Class C ON Req.ClassID = C.ClassID 
         JOIN Department D ON C.DeptID = D.DeptID
-        WHERE Req.PreferredRoomID IS NULL
+        WHERE Req.ReqStatus = 'Pending' 
         ORDER BY Req.Priority DESC, Req.RequestID ASC;
     `;
     db.query(query, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error('SQL QUERY ERROR (requests):', err);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(results);
     });
 });
@@ -111,8 +113,8 @@ app.post('/api/requests', (req, res) => {
     }
 
     const query = `
-        INSERT INTO Request (ClassID, DeptID, Priority, EquipRequest, PreferredRoomID, PreferredTime, CardBltID, DateSubmitted) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        INSERT INTO Request (ClassID, DeptID, Priority, EquipRequest, PreferredRoomID, PreferredTime, CardBltID, DateSubmitted, ReqStatus) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), 'Pending')
     `;
     const values = [classID, deptID, priority, equipRequest || null, preferredRoomID || null, preferredTime, cardBltID || null];
 
@@ -204,12 +206,18 @@ app.post('/api/assignments', (req, res) => {
                     return res.status(500).json({ error: 'Assignment insertion failed.' });
                 }
 
-                const updateRequestQuery = 'UPDATE Request SET PreferredRoomID = ? WHERE RequestID = ?';
-                db.query(updateRequestQuery, [roomID, requestID], (err) => {
-                    if (err) {
-                        console.error('Error updating request status:', err);
+                const updateRequestQuery = `
+                    UPDATE Request 
+                    SET ReqStatus = 'Accepted' 
+                    WHERE RequestID = ?
+                `;
+                
+                db.query(updateRequestQuery, [requestID], (updateErr) => {
+                    if (updateErr) {
+                        console.error('Error updating request status:', updateErr);
                     }
-                    res.status(201).json({ message: 'Assignment created and request updated successfully.', assignmentID: result.insertId });
+                    
+                    res.status(201).json({ message: 'Assignment created successfully and request accepted.', assignmentID: result.insertId });
                 });
             });
         });
@@ -218,4 +226,6 @@ app.post('/api/assignments', (req, res) => {
 
 app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
-});
+}); //made by Kian S.
+
+// Kian remember TRUNCATE TABLE "table's name" deletes the data 
