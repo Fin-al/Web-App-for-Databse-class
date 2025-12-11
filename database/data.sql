@@ -15,7 +15,7 @@ INSERT INTO Secretary (SecretaryID, UserID, DeptID) VALUES
 (10, 101, 100),
 (20, 201, 200);
 
--- No Faculty inserts here
+  
 
 INSERT INTO Building (BldgID, BldgName, BldgContactInfo, DeptID) VALUES
 (1, 'Science Center (SC)', 'Ext 4500', 100),
