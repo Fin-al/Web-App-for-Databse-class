@@ -25,7 +25,7 @@ db.connect(err => {
         console.error('Database connection failed:', err.stack);
         return;
     }
-    console.log('Database connected successfully! ✅');
+    console.log('Database connected successfully!');
 });
 
 app.post('/api/login', (req, res) => {
